@@ -10,16 +10,19 @@ const socketIo = require('socket.io');
 const multer = require('multer');
 const path = require('path');
 
+// Initialize Express
+const app = express();
+const port = process.env.PORT || 3000;
+
 // Initialize Socket.IO
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: true, // Matches your existing CORS origin
+    origin: true,
     methods: ['GET', 'POST'],
     credentials: true,
   },
 });
-
 
 // Multer for image uploads
 const storage = multer.diskStorage({
@@ -30,7 +33,6 @@ const storage = multer.diskStorage({
     cb(null, Date.now() + path.extname(file.originalname));
   },
 });
-
 const upload = multer({
   storage,
   fileFilter: (req, file, cb) => {
@@ -42,10 +44,8 @@ const upload = multer({
   },
 });
 
+// Middleware to serve uploaded images
 app.use('/uploads', express.static(path.join(__dirname, 'Uploads')));
-
-const app = express();
-const port = process.env.PORT || 3000;
 
 // MongoDB URI
 const user = process.env.USER_DB;
@@ -101,6 +101,49 @@ async function run() {
     const paymentHistory = db.collection("paymentHistory");
     const messagesCollection = db.collection('messages');
 
+    // API Endpoints for Community Chat
+    app.get('/api/messages', async (req, res) => {
+      try {
+        const messages = await messagesCollection
+          .find()
+          .sort({ timestamp: 1 })
+          .toArray();
+        res.json(messages);
+      } catch (err) {
+        console.error('❌ Error fetching messages:', err);
+        res.status(500).json({ error: 'Failed to fetch messages' });
+      }
+    });
+
+    app.post('/api/messages', upload.single('image'), async (req, res) => {
+      try {
+        const { text, sender, replyTo } = req.body;
+        const imageUrl = req.file ? `/uploads/${req.file.filename}` : null;
+        const message = {
+          text,
+          sender,
+          imageUrl,
+          replyTo: replyTo ? JSON.parse(replyTo) : null,
+          timestamp: new Date(),
+        };
+        const result = await messagesCollection.insertOne(message);
+        message._id = result.insertedId; // Add _id to the message for Socket.IO
+        io.emit('message', message); // Broadcast to all clients
+        res.status(201).json(message);
+      } catch (err) {
+        console.error('❌ Error sending message:', err);
+        res.status(500).json({ error: 'Failed to send message' });
+      }
+    });
+
+    // Socket.IO Connection
+    io.on('connection', (socket) => {
+      console.log('New client connected:', socket.id);
+      socket.on('disconnect', () => {
+        console.log('Client disconnected:', socket.id);
+      });
+    });
+
     // Routes
     app.post("/jwt", async (req, res) => {
       const { email } = req.body;
@@ -143,7 +186,7 @@ async function run() {
             $or: [
               { postTitle: { $regex: query, $options: "i" } },
               { postDescription: { $regex: query, $options: "i" } },
-              { tag: { $regex: query, $options: "i" } }, 
+              { tag: { $regex: query, $options: "i" } },
             ],
           })
           .sort({ createdAt: -1 })
@@ -180,7 +223,7 @@ async function run() {
       }
     });
 
-    //  Get All Tags
+    // Get All Tags
     app.get("/tags", async (req, res) => {
       try {
         const tags = await postTagCollection.find().toArray();
@@ -191,7 +234,7 @@ async function run() {
       }
     });
 
-    //  Add Tag
+    // Add Tag
     app.post("/tags", async (req, res) => {
       try {
         const { tag } = req.body;
@@ -214,7 +257,7 @@ async function run() {
       }
     });
 
-    //  Get All Users
+    // Get All Users
     app.get("/users", async (req, res) => {
       try {
         const users = await userCollection.find().toArray();
@@ -233,7 +276,7 @@ async function run() {
       }
     });
 
-    //  Create New User
+    // Create New User
     app.post("/users", async (req, res) => {
       try {
         const { uid, email, fullName, photoURL, badge } = req.body;
@@ -266,28 +309,7 @@ async function run() {
       }
     });
 
-    // POST /jwt
-    app.post("/jwt", async (req, res) => {
-      const { email } = req.body;
-
-      if (!email) return res.status(400).send({ message: "Email is required" });
-
-      const user = await userCollection.findOne({ email });
-      if (!user) return res.status(404).send({ message: "User not found" });
-
-      const token = generateToken(user);
-
-      res
-        .cookie("token", token, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === "production",
-          sameSite: "strict",
-          maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-        })
-        .send({ success: true, message: "JWT set in cookie" });
-    });
-
-    //  Update User
+    // Update User
     app.put("/users/:id", async (req, res) => {
       const id = req.params.id;
 
@@ -314,7 +336,7 @@ async function run() {
       }
     });
 
-    //  Get Posts (All or 3 recent by user email)
+    // Get Posts (All or by user email)
     app.get("/posts", async (req, res) => {
       const { authorEmail, popular } = req.query;
 
@@ -375,7 +397,7 @@ async function run() {
       }
     });
 
-    //  Add New Post
+    // Add New Post
     app.post("/posts", async (req, res) => {
       const postData = req.body;
 
@@ -429,28 +451,22 @@ async function run() {
         let newVoters;
 
         if (!existingVote) {
-          // New vote
           update =
             voteType === "upvote"
               ? { $inc: { upVote: 1 } }
               : { $inc: { downVote: 1 } };
-
           newVoters = [...voters, { email: userEmail, type: voteType }];
         } else if (existingVote.type === voteType) {
-          // Remove vote
           update =
             voteType === "upvote"
               ? { $inc: { upVote: -1 } }
               : { $inc: { downVote: -1 } };
-
           newVoters = voters.filter((v) => v.email !== userEmail);
         } else {
-          // Switch vote
           update =
             voteType === "upvote"
               ? { $inc: { upVote: 1, downVote: -1 } }
               : { $inc: { upVote: -1, downVote: 1 } };
-
           newVoters = voters.map((v) =>
             v.email === userEmail ? { email: userEmail, type: voteType } : v
           );
@@ -471,7 +487,7 @@ async function run() {
       }
     });
 
-    //  DELETE Post
+    // DELETE Post
     app.delete("/posts/:id", async (req, res) => {
       const postId = req.params.id;
       const email = req.query.email;
@@ -511,7 +527,7 @@ async function run() {
       }
     });
 
-    //  Get comment count
+    // Get comment count
     app.get("/comments/count", async (req, res) => {
       const title = req.query.title;
       if (!title)
@@ -546,7 +562,7 @@ async function run() {
       }
     });
 
-    //  Add comment
+    // Add comment
     app.post("/comments", async (req, res) => {
       const { postId, commentText, commenterEmail } = req.body;
       if (!postId || !commentText || !commenterEmail) {
@@ -750,7 +766,7 @@ async function run() {
       }
     });
 
-    //  Move all user's notifications to archive & clear active
+    // Move all user's notifications to archive & clear active
     app.post("/notifications/archive", async (req, res) => {
       const { userEmail } = req.body;
 
@@ -767,10 +783,7 @@ async function run() {
           return res.send({ message: "No notifications to archive" });
         }
 
-        // Step 1: Insert into archive
         await db.collection("notificationArchive").insertMany(notifications);
-
-        // Step 2: Remove from main collection
         await db.collection("notifications").deleteMany({ userEmail });
 
         res.send({
@@ -807,7 +820,7 @@ async function run() {
       }
     });
 
-    //  Get All Membership Plans
+    // Get All Membership Plans
     app.get("/membershipplans", async (req, res) => {
       try {
         const plans = await db.collection("membershipplans").find().toArray();
@@ -818,7 +831,7 @@ async function run() {
       }
     });
 
-    //  Get Membership Plan by ID
+    // Get Membership Plan by ID
     app.get("/membershipplans/:id", async (req, res) => {
       const id = req.params.id;
 
@@ -842,7 +855,7 @@ async function run() {
       }
     });
 
-    //  Get Payment History (All or by Email)
+    // Get Payment History (All or by Email)
     app.get("/payments", async (req, res) => {
       const email = req.query.email;
 
@@ -862,7 +875,7 @@ async function run() {
       }
     });
 
-    //  Save Payment & Update User Badge
+    // Save Payment & Update User Badge
     app.post("/payments", async (req, res) => {
       const {
         userEmail,
@@ -886,7 +899,6 @@ async function run() {
       }
 
       try {
-        //  Save to payments collection
         const paymentDoc = {
           userEmail,
           userId,
@@ -935,7 +947,8 @@ async function run() {
       res.send("CodeCircle API is live!");
     });
 
-    app.listen(port, () => {
+    // Start the server
+    server.listen(port, () => {
       console.log(`⚡ Server running on http://localhost:${port}`);
     });
   } catch (err) {
