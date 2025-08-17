@@ -20,7 +20,7 @@ const io = socketIo(server, {
   cors: {
     origin: true,
     methods: ['GET', 'POST'],
-    credentials: false,
+    credentials: true,
   },
 });
 
