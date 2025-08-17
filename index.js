@@ -45,7 +45,7 @@ const upload = multer({
 });
 
 // Middleware to serve uploaded images
-app.use('/uploads', express.static(path.join(__dirnam, 'Uploads')));
+app.use('/uploads', express.static(path.join(__dirname, 'Uploads')));
 
 // MongoDB URI
 const user = process.env.USER_DB;
